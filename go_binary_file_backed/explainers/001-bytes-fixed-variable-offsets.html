@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LunaSQL: Bytes, fields, and offsets</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101218; --panel:#181c25; --text:#edf2ff; --muted:#aab3c5; --accent:#8be9fd; --good:#50fa7b; --warn:#ffb86c; --bad:#ff6b6b; }
+    body { margin:0; font:16px/1.55 system-ui, sans-serif; background:linear-gradient(135deg,#101218,#151827); color:var(--text); }
+    main { max-width: 980px; margin: 0 auto; padding: 40px 22px 80px; }
+    h1 { font-size: clamp(2rem, 4vw, 4rem); line-height:1; margin:0 0 12px; }
+    h2 { margin-top:42px; border-top:1px solid #303747; padding-top:28px; }
+    a { color: var(--accent); }
+    .card, .try { background:rgba(24,28,37,.9); border:1px solid #303747; border-radius:18px; padding:20px; margin:18px 0; box-shadow:0 12px 35px rgba(0,0,0,.25); }
+    .try { border-color:#45605c; background:rgba(28,45,45,.75); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow:auto; background:#0b0d12; border-radius:14px; padding:16px; border:1px solid #2b3240; }
+    .bytes { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0; }
+    .byte { min-width:42px; padding:9px 6px; text-align:center; border-radius:10px; background:#273044; border:1px solid #3b455b; }
+    .label { color:var(--muted); font-size:.85rem; }
+    table { width:100%; border-collapse:collapse; overflow:hidden; border-radius:12px; }
+    th, td { border-bottom:1px solid #303747; padding:10px; text-align:left; }
+    input { background:#0b0d12; color:var(--text); border:1px solid #3b455b; border-radius:10px; padding:9px; }
+    button { background:var(--accent); color:#071014; border:0; border-radius:10px; padding:9px 12px; font-weight:700; cursor:pointer; }
+    .answer { margin-top:10px; color:var(--good); }
+    .warn { color:var(--warn); }
+  </style>
+</head>
+<body><main>
+  <p class="label">LunaSQL storage step 3</p>
+  <h1>Rows are just agreements about bytes</h1>
+  <p class="card">Your current LunaSQL table is JSON: self-describing, easy to inspect, and expensive. A binary row store removes most labels and stores values at agreed byte positions. This lesson is the bridge from <code>[]map[string]string</code> to rows that live directly inside a <code>.table</code> file.</p>
+
+  <h2>1. A byte is the smallest addressable storage unit you will handle</h2>
+  <p>In Go, a <code>[]byte</code> is a slice over bytes; the official Go slices article explains that a slice is a descriptor containing a pointer, length, and capacity, not the backing array itself <a href="https://go.dev/blog/slices-intro">[Go slices internals]</a>.</p>
+  <p>If a file contains these bytes:</p>
+  <div class="bytes"><span class="byte">4c</span><span class="byte">75</span><span class="byte">6e</span><span class="byte">61</span></div>
+  <p>Those bytes can mean the string <code>"Luna"</code> only because we choose to decode them as UTF-8 text. Bytes do not carry meaning by themselves.</p>
+
+  <h2>2. Fixed-size fields make offsets easy</h2>
+  <p>A fixed-size field always uses the same number of bytes. A <code>uint32</code> is 4 bytes. That means if a row layout is:</p>
+  <table><thead><tr><th>Field</th><th>Size</th><th>Offset</th></tr></thead><tbody>
+    <tr><td>id</td><td>4 bytes</td><td>0</td></tr>
+    <tr><td>age</td><td>4 bytes</td><td>4</td></tr>
+  </tbody></table>
+  <p>Then row <code>{id: 7, age: 42}</code> is always 8 bytes long. Go's <code>encoding/binary</code> package is the standard tool for putting fixed-size numbers into byte slices <a href="https://pkg.go.dev/encoding/binary">[Go encoding/binary]</a>.</p>
+  <pre><code>row := make([]byte, 8)
+binary.LittleEndian.PutUint32(row[0:4], 7)
+binary.LittleEndian.PutUint32(row[4:8], 42)
+
+id := binary.LittleEndian.Uint32(row[0:4])
+age := binary.LittleEndian.Uint32(row[4:8])</code></pre>
+  <p><strong>Little endian</strong> means the least significant byte comes first. The exact choice matters less than being consistent.</p>
+
+  <div class="try">
+    <h3>Try this: calculate a fixed offset</h3>
+    <p>Layout: <code>id uint32</code>, <code>age uint32</code>, <code>score uint32</code>. What is the byte offset of <code>score</code>?</p>
+    <input id="offsetAnswer" placeholder="offset" /> <button onclick="checkOffset()">Check</button>
+    <div id="offsetResult" class="answer"></div>
+  </div>
+
+  <h2>3. Variable-size fields break simple offsets</h2>
+  <p>A string is variable-size: <code>"Al"</code> is 2 bytes, <code>"Bartosz"</code> is 7 bytes. If a row stores <code>id</code> followed directly by <code>name</code>, where does the next field start? It depends on the name length.</p>
+  <p>The usual beginner solution is length-prefixing:</p>
+  <table><thead><tr><th>Part</th><th>Size</th><th>Meaning</th></tr></thead><tbody>
+    <tr><td>id</td><td>4 bytes</td><td>fixed integer</td></tr>
+    <tr><td>name_len</td><td>4 bytes</td><td>number of bytes in name</td></tr>
+    <tr><td>name_bytes</td><td>name_len bytes</td><td>raw string bytes</td></tr>
+  </tbody></table>
+  <p>Now the decoder reads 4 bytes for <code>id</code>, 4 bytes for <code>name_len</code>, then exactly <code>name_len</code> bytes for the name.</p>
+
+  <h2>4. Offsets are positions, not values</h2>
+  <p>An offset is a byte position measured from a known start. If a row starts at byte 100 in a file, then offset 4 inside the row means absolute file position 104.</p>
+  <pre><code>absolutePosition = rowStart + fieldOffset</code></pre>
+  <p>SQLite's file format documentation is full of precise byte offsets because a database file must be understandable without guessing <a href="https://www.sqlite.org/fileformat.html">[SQLite file format]</a>. PostgreSQL documents pages similarly, using page headers and item pointers to find tuples <a href="https://www.postgresql.org/docs/current/storage-page-layout.html">[PostgreSQL page layout]</a>.</p>
+
+  <h2>5. A tiny LunaSQL row format</h2>
+  <p>For the next exercise, use this append-only row format:</p>
+  <pre><code>row_size uint32
+id       uint32
+name_len uint32
+name     []byte</code></pre>
+  <p>The outer <code>row_size</code> lets the scanner skip or read one whole row at a time. The inner <code>name_len</code> lets the decoder know where the variable-size string ends.</p>
+  <p class="warn">This is not a final database design. It is deliberately pre-page, pre-index, and pre-transaction so you can master bytes first.</p>
+
+  <div class="try">
+    <h3>Try this: row size</h3>
+    <p>With format <code>row_size uint32, id uint32, name_len uint32, name bytes</code>, how many total bytes does row <code>{id: 1, name: "Luna"}</code> use?</p>
+    <input id="sizeAnswer" placeholder="bytes" /> <button onclick="checkSize()">Check</button>
+    <div id="sizeResult" class="answer"></div>
+  </div>
+
+  <h2>Next move</h2>
+  <p>Open <code>exercises/001_row_codec/main.go</code>. Implement the TODOs, then run:</p>
+  <pre><code>cd /home/zebartosz/dev/sandbox/go_binary_file_backed
+cd exercises/001_row_codec
+go test ./...</code></pre>
+
+<script>
+function checkOffset(){ const v=document.getElementById('offsetAnswer').value.trim(); document.getElementById('offsetResult').textContent = v==='8' ? 'Correct: id is 0..3, age is 4..7, score starts at 8.' : 'Not quite. Add the sizes of the fields before score: 4 + 4.'; }
+function checkSize(){ const v=document.getElementById('sizeAnswer').value.trim(); document.getElementById('sizeResult').textContent = v==='16' ? 'Correct: 4 + 4 + 4 + 4 = 16 bytes.' : 'Not quite. Count row_size, id, name_len, and the 4 bytes in "Luna".'; }
+</script>
+</main></body></html>

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go Concurrency Primitives: First Map</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#111a33; --ink:#edf3ff; --muted:#a8b3cf; --accent:#7dd3fc; --good:#86efac; --warn:#fbbf24; --bad:#fb7185; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background: radial-gradient(circle at top left,#1e3a8a 0,#0b1020 36rem); color:var(--ink); line-height:1.55; }
+    main { max-width: 1050px; margin: 0 auto; padding: 42px 20px 80px; }
+    h1 { font-size: clamp(2rem, 4vw, 4rem); line-height: .95; margin: 0 0 12px; letter-spacing:-.05em; }
+    h2 { margin-top: 42px; font-size: 1.65rem; }
+    h3 { margin: 0 0 8px; }
+    a { color: var(--accent); }
+    .lede { color: var(--muted); font-size: 1.15rem; max-width: 760px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap:16px; margin: 22px 0; }
+    .card, .try, .quiz { background: color-mix(in srgb, var(--panel) 90%, white 4%); border: 1px solid rgba(255,255,255,.11); border-radius: 20px; padding: 18px; box-shadow: 0 16px 50px rgba(0,0,0,.22); }
+    .tag { display:inline-block; padding: 3px 9px; border-radius: 99px; background: rgba(125,211,252,.14); color: var(--accent); font-size: .78rem; font-weight:700; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow:auto; background:#050814; border-radius: 14px; padding: 14px; border:1px solid rgba(255,255,255,.08); }
+    .diagram { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; padding:18px; }
+    .box { border:2px solid rgba(125,211,252,.55); border-radius:14px; padding:10px 14px; background:rgba(125,211,252,.08); min-width:120px; text-align:center; font-weight:700; }
+    .arrow { color:var(--accent); font-size:1.8rem; }
+    button { background:var(--accent); color:#05111f; border:0; border-radius:10px; padding:9px 12px; font-weight:800; cursor:pointer; }
+    .answer { margin-top:10px; color:var(--good); display:none; }
+    .wrong { color:var(--bad); }
+    table { border-collapse: collapse; width:100%; overflow:hidden; border-radius:14px; }
+    th, td { border:1px solid rgba(255,255,255,.11); padding:10px; vertical-align:top; }
+    th { background:rgba(255,255,255,.07); text-align:left; }
+  </style>
+</head>
+<body>
+<main>
+  <span class="tag">Session 001 · map before mastery</span>
+  <h1>Go concurrency primitives are a small toolbox, not magic.</h1>
+  <p class="lede">Your interview target for now: when you see work happening at the same time, choose the primitive that expresses the coordination clearly. This first explainer gives you the map; the exercises give you the muscle memory.</p>
+
+  <section class="card">
+    <h2>The one sentence model</h2>
+    <p>A <strong>goroutine</strong> runs a function concurrently; a <strong>channel</strong> lets goroutines communicate; a <strong>WaitGroup</strong> waits for goroutines to finish; a <strong>Mutex</strong> protects shared data; an <strong>atomic</strong> updates one small value with low-level synchronization.</p>
+    <p>Go's official material introduces goroutines and channels in the <a href="https://go.dev/tour/concurrency/1">Go Tour concurrency section</a>, documents locks and wait groups in <a href="https://pkg.go.dev/sync">package sync</a>, and documents atomics in <a href="https://pkg.go.dev/sync/atomic">package sync/atomic</a>.</p>
+  </section>
+
+  <h2>Primitive map</h2>
+  <div class="grid">
+    <div class="card"><h3>Goroutine</h3><p><code>go f()</code> starts <code>f</code> concurrently. It does not automatically give you a result, wait, or handle errors.</p></div>
+    <div class="card"><h3>Channel</h3><p>A typed pipe. Send with <code>ch &lt;- x</code>; receive with <code>x := &lt;-ch</code>. Channels are useful when ownership or data should move between goroutines.</p></div>
+    <div class="card"><h3>WaitGroup</h3><p>A counter for "how many goroutines are still running?" Add before starting, call Done when finished, Wait in the parent.</p></div>
+    <div class="card"><h3>Mutex</h3><p>A lock around shared memory. If multiple goroutines read/write the same map, slice, struct, or counter, a Mutex is often the straightforward fix.</p></div>
+    <div class="card"><h3>Atomic</h3><p>A specialized synchronized operation for one value, commonly counters or flags. Prefer it when the state is truly tiny and independent.</p></div>
+  </div>
+
+  <section class="card">
+    <h2>Visual: two styles of coordination</h2>
+    <div class="diagram">
+      <div class="box">goroutine A</div><div class="arrow">→ channel →</div><div class="box">goroutine B</div>
+    </div>
+    <p><strong>Channel style:</strong> communicate by passing values. The Go blog phrases this as <a href="https://go.dev/blog/codelab-share">"share memory by communicating"</a>.</p>
+    <div class="diagram">
+      <div class="box">goroutine A</div><div class="arrow">↘</div><div class="box">mutex + shared map</div><div class="arrow">↙</div><div class="box">goroutine B</div>
+    </div>
+    <p><strong>Mutex style:</strong> coordinate access to shared memory. This is still idiomatic when the shared thing is naturally one object, like a cache or table catalog.</p>
+  </section>
+
+  <h2>Decision table</h2>
+  <table>
+    <tr><th>If you need...</th><th>Reach for...</th><th>Interview wording</th></tr>
+    <tr><td>Run work in parallel</td><td><code>go</code> goroutine</td><td>"A goroutine starts concurrent execution, but I still need coordination."</td></tr>
+    <tr><td>Wait for N goroutines to finish</td><td><code>sync.WaitGroup</code></td><td>"WaitGroup tracks completion, not results."</td></tr>
+    <tr><td>Send results/errors between goroutines</td><td>channel</td><td>"A channel transfers typed values and can also signal completion by closing."</td></tr>
+    <tr><td>Protect a shared map/cache/struct</td><td><code>sync.Mutex</code></td><td>"The lock creates a critical section around shared state."</td></tr>
+    <tr><td>Increment/read a simple counter safely</td><td><code>sync/atomic</code></td><td>"Atomic avoids a lock for a single independent value, but doesn't protect compound state."</td></tr>
+  </table>
+
+  <section class="try">
+    <h2>Try this mentally</h2>
+    <p>You are adding parallel lexing to a toy compiler: 4 goroutines tokenize 4 files. You need to gather each file's token count. Which primitive is essential?</p>
+    <button onclick="document.getElementById('a1').style.display='block'">Reveal answer</button>
+    <p id="a1" class="answer">A goroutine for each file, plus either a channel to return token counts or a shared result slice protected by a Mutex. A WaitGroup is needed if the parent must wait for all work to finish. The clean beginner solution: channel of results + WaitGroup/close.</p>
+  </section>
+
+  <section class="quiz">
+    <h2>Mini quiz</h2>
+    <p><strong>1.</strong> Does <code>go work()</code> wait for <code>work</code> to finish?</p>
+    <button onclick="show('q1','No. It starts work concurrently and immediately continues. Use WaitGroup/channel/etc. to coordinate.')">Answer</button><div id="q1" class="answer"></div>
+    <p><strong>2.</strong> You concurrently write to a map from two goroutines. What bug class are you worried about?</p>
+    <button onclick="show('q2','A data race / unsafe shared memory access. Use a Mutex, channel ownership, or another safe design. The official race detector can help: go test -race.')">Answer</button><div id="q2" class="answer"></div>
+    <p><strong>3.</strong> Why not use atomics for everything?</p>
+    <button onclick="show('q3','Atomics are low-level and fit single independent values. They do not automatically make a multi-field invariant, map, or slice operation safe.')">Answer</button><div id="q3" class="answer"></div>
+  </section>
+
+  <section class="card">
+    <h2>Next action</h2>
+    <pre><code>cd /home/zebartosz/dev/sandbox/go_concurrency_primitives
+python3 -m http.server 8000
+# then open http://localhost:8000/explainers/001-concurrency-primitives-map.html</code></pre>
+    <p>After reading, run the broken exercise tests. They are designed to fail first.</p>
+  </section>
+</main>
+<script>
+function show(id, text){ const el=document.getElementById(id); el.textContent=text; el.style.display='block'; }
+</script>
+</body>
+</html>

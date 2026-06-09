@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go concurrency failure modes</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --card:#141b34; --ink:#eef3ff; --muted:#aeb8d4; --bad:#ff6b6b; --good:#4ade80; --warn:#fbbf24; --line:#2a355d; --code:#080c18; }
+    body { margin:0; font:16px/1.5 system-ui, sans-serif; background:radial-gradient(circle at top left,#1b2a55,var(--bg) 45%); color:var(--ink); }
+    main { max-width:1050px; margin:0 auto; padding:32px 18px 56px; }
+    h1 { font-size:clamp(2rem,5vw,4rem); line-height:1; margin:0 0 12px; }
+    h2 { margin:0 0 10px; }
+    p { color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); gap:16px; margin-top:24px; }
+    .card { background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02)); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 12px 40px rgba(0,0,0,.25); }
+    .tag { display:inline-block; border-radius:999px; padding:3px 9px; font-size:.78rem; font-weight:700; background:#25315d; color:#dce6ff; margin-bottom:10px; }
+    .bad { color:var(--bad); } .good { color:var(--good); } .warn { color:var(--warn); }
+    pre { background:var(--code); border:1px solid #202947; border-radius:12px; padding:12px; overflow:auto; font-size:.9rem; }
+    code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .flow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0; }
+    .box { border:1px solid var(--line); background:#101831; border-radius:12px; padding:9px 11px; min-width:70px; text-align:center; }
+    .arrow { color:var(--muted); font-weight:900; }
+    .rule { margin-top:12px; padding:12px; border-left:4px solid var(--good); background:rgba(74,222,128,.08); border-radius:8px; color:#dfffea; }
+    .quiz { margin-top:30px; padding:20px; border:1px dashed #59689e; border-radius:18px; background:rgba(20,27,52,.7); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Go concurrency failure modes</h1>
+  <p>Use this while fixing <code>exercises/mixed_debugging_lab_test.go</code>. For each bug, ask: <strong>compile, run, block, panic, race, leak, or wrong value?</strong></p>
+
+  <section class="grid">
+    <article class="card">
+      <span class="tag">unbuffered channel</span>
+      <h2>Send before receiver</h2>
+      <div class="flow"><div class="box bad">send 42</div><span class="arrow">needs</span><div class="box">receiver now</div></div>
+      <p>An unbuffered channel has no storage. The sender and receiver must rendezvous.</p>
+      <pre><code>ch := make(chan int)
+ch &lt;- 42 // blocks
+v := &lt;-ch // never reached</code></pre>
+      <div class="rule">Fix by starting a receiver/sender goroutine, or by reordering so a matching operation can happen.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">buffered channel</span>
+      <h2>Buffer full before receive</h2>
+      <div class="flow"><div class="box good">10</div><div class="box bad">full</div><span class="arrow">then</span><div class="box">send 20 blocks</div></div>
+      <p>A buffered channel stores up to capacity. A send to a full buffer blocks immediately.</p>
+      <pre><code>ch := make(chan int, 1)
+ch &lt;- 10
+ch &lt;- 20 // blocks before receives</code></pre>
+      <div class="rule">Fix by receiving before the second send, increasing capacity intentionally, or using another goroutine.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">closed channel</span>
+      <h2>Receive vs send</h2>
+      <p>Receiving from a closed empty channel is allowed. Sending to a closed channel panics.</p>
+      <pre><code>v, ok := &lt;-ch // ok false when closed + empty
+ch &lt;- 2       // panic if ch is closed</code></pre>
+      <div class="rule"><code>ok == false</code> is the signal. The zero value alone is not enough.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">range over channel</span>
+      <h2>Never closed</h2>
+      <div class="flow"><div class="box">1</div><div class="box">2</div><span class="arrow">then</span><div class="box bad">wait forever</div></div>
+      <p><code>for v := range ch</code> ends only when the channel is closed.</p>
+      <pre><code>go func() {
+  out &lt;- 1
+  out &lt;- 2
+  // forgot close(out)
+}()</code></pre>
+      <div class="rule">Usually the sending side closes the channel when no more values will be sent.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">WaitGroup</span>
+      <h2>Counter mismatch</h2>
+      <div class="flow"><div class="box">Add(2)</div><span class="arrow">→</span><div class="box">Done()</div><span class="arrow">→</span><div class="box bad">counter 1</div></div>
+      <p><code>Wait</code> blocks until the counter is zero. Every added task needs a matching <code>Done</code>.</p>
+      <pre><code>wg.Add(2)
+go func() { defer wg.Done() }()
+wg.Wait() // blocks</code></pre>
+      <div class="rule">Make <code>Add</code> match the number of goroutines/tasks, or start the missing worker.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">shared state</span>
+      <h2>Race on counter</h2>
+      <p><code>count++</code> is read, add, write. Two goroutines can interleave and lose updates.</p>
+      <pre><code>// protect the critical section
+mu.Lock()
+count++
+mu.Unlock()</code></pre>
+      <div class="rule">Run <code>go test -race</code>. Use a mutex for shared state critical sections.</div>
+    </article>
+
+    <article class="card">
+      <span class="tag">atomic</span>
+      <h2>Load + Store is not increment</h2>
+      <p>Each operation is atomic, but the pair can interleave.</p>
+      <pre><code>old := count.Load()
+count.Store(old + 1) // wrong increment
+
+count.Add(1)         // correct increment</code></pre>
+      <div class="rule">Atomic means the whole operation cannot be interleaved. Choose the operation that matches your intent.</div>
+    </article>
+  </section>
+
+  <section class="quiz">
+    <h2>Debugging script</h2>
+    <ol>
+      <li>Run one test: <code>go test ./exercises -run TestMixedUnbufferedSendBeforeReceive</code></li>
+      <li>Predict the failure before reading the error.</li>
+      <li>Fix only the implementation function.</li>
+      <li>Repeat for each <code>TestMixed...</code>.</li>
+      <li>Finish with <code>go test -race ./exercises -run TestMixed</code>.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>
