@@ -5,11 +5,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestAppendAndScanRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "users.table")
+	path := exerciseFilePath(t, "users.table")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 
 	want := []Row{
 		{ID: 1, Name: "Luna"},
@@ -86,6 +90,15 @@ func TestAppendActuallyAppends(t *testing.T) {
 	if secondSize <= firstSize {
 		t.Fatalf("file did not grow: first=%d second=%d", firstSize, secondSize)
 	}
+}
+
+func exerciseFilePath(t *testing.T, name string) string {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate test file")
+	}
+	return filepath.Join(filepath.Dir(filename), name)
 }
 
 func fileSize(t *testing.T, path string) int64 {
